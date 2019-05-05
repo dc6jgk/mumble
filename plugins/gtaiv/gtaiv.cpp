@@ -1,3 +1,8 @@
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
+
 /* Copyright (C) 2011, Mike <mike@flomp.net>
    Copyright (C) 2005-2012, Thorvald Natvig <thorvald@natvig.com>
 
@@ -32,13 +37,12 @@
 #include "../mumble_plugin_win32.h"
 
 static unsigned int playerid;
-static BYTE *base_address;
-static BYTE *cvecptr;
-static BYTE *displayptr;
+static procptr_t base_address;
+static procptr_t cvecptr;
+static procptr_t displayptr;
 
 static int setuppointers() {
-	BYTE *playerptr;
-	BYTE *charptr;
+	procptr_t playerptr, charptr;
 
 	// Player stuff
 	if (!peekProc(base_address + 0xF1CC68, playerid))
@@ -127,7 +131,7 @@ static int trylock(const std::multimap<std::wstring, unsigned long long int> &pi
 	float cpos[3], cfront[3], ctop[3];
 	std::wstring sidentity;
 	std::string scontext;
-	BYTE *viewportptr;
+	procptr_t viewportptr;
 
 	base_address = pModule - 0x400000;
 
@@ -173,11 +177,10 @@ static MumblePlugin2 gtaivplug2 = {
 	trylock
 };
 
-extern "C" __declspec(dllexport) MumblePlugin *getMumblePlugin() {
+extern "C" MUMBLE_PLUGIN_EXPORT MumblePlugin *getMumblePlugin() {
 	return &gtaivplug;
 }
 
-extern "C" __declspec(dllexport) MumblePlugin2 *getMumblePlugin2() {
+extern "C" MUMBLE_PLUGIN_EXPORT MumblePlugin2 *getMumblePlugin2() {
 	return &gtaivplug2;
 }
-

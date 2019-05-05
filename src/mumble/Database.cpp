@@ -1,32 +1,7 @@
-/* Copyright (C) 2005-2011, Thorvald Natvig <thorvald@natvig.com>
-
-   All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions
-   are met:
-
-   - Redistributions of source code must retain the above copyright notice,
-     this list of conditions and the following disclaimer.
-   - Redistributions in binary form must reproduce the above copyright notice,
-     this list of conditions and the following disclaimer in the documentation
-     and/or other materials provided with the distribution.
-   - Neither the name of the Mumble Developers nor the names of its
-     contributors may be used to endorse or promote products derived from this
-     software without specific prior written permission.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-   ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-   A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
-   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-   EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
 
 #include "mumble_pch.hpp"
 
@@ -61,15 +36,15 @@ static bool execQueryAndLogFailure(QSqlQuery &query, const QString &queryString)
 }
 
 
-Database::Database() {
-	QSqlDatabase db = QSqlDatabase::addDatabase(QLatin1String("QSQLITE"));
+Database::Database(const QString &dbname) {
+	db = QSqlDatabase::addDatabase(QLatin1String("QSQLITE"), dbname);
 	QSettings qs;
 	QStringList datapaths;
 	int i;
 
 	datapaths << g.qdBasePath.absolutePath();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-	datapaths << QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+#if QT_VERSION >= 0x050000
+	datapaths << QStandardPaths::writableLocation(QStandardPaths::DataLocation);
 #else
 	datapaths << QDesktopServices::storageLocation(QDesktopServices::DataLocation);
 #endif
@@ -84,16 +59,19 @@ Database::Database() {
 
 	for (i = 0; (i < datapaths.size()) && ! found; i++) {
 		if (!datapaths[i].isEmpty()) {
-			QFile f(datapaths[i] + QLatin1String("/mumble.sqlite"));
-			if (f.exists()) {
-				db.setDatabaseName(f.fileName());
+			// Try the legacy path first, and use it if it exists.
+			// If it doesn't, use the new, non-hidden version.
+			QFile legacyDatabaseFile(datapaths[i] + QLatin1String("/.mumble.sqlite"));
+			if (legacyDatabaseFile.exists()) {
+				db.setDatabaseName(legacyDatabaseFile.fileName());
 				found = db.open();
 			}
-
-			//TODO: If the above succeeds, but we also have a .mumble.sqlite, we open another DB!?
-			QFile f2(datapaths[i] + QLatin1String("/.mumble.sqlite"));
-			if (f2.exists()) {
-				db.setDatabaseName(f2.fileName());
+			if (found) {
+				break;
+			}
+			QFile databaseFile(datapaths[i] + QLatin1String("/mumble.sqlite"));
+			if (databaseFile.exists()) {
+				db.setDatabaseName(databaseFile.fileName());
 				found = db.open();
 			}
 		}
@@ -103,11 +81,7 @@ Database::Database() {
 		for (i = 0; (i < datapaths.size()) && ! found; i++) {
 			if (!datapaths[i].isEmpty()) {
 				QDir::root().mkpath(datapaths[i]);
-#ifdef Q_OS_WIN
 				QFile f(datapaths[i] + QLatin1String("/mumble.sqlite"));
-#else
-				QFile f(datapaths[i] + QLatin1String("/.mumble.sqlite"));
-#endif
 				db.setDatabaseName(f.fileName());
 				found = db.open();
 			}
@@ -122,7 +96,7 @@ Database::Database() {
 	QFileInfo fi(db.databaseName());
 
 	if (! fi.isWritable()) {
-		QMessageBox::critical(NULL, QLatin1String("Mumble"), tr("The database '%1' is read-only. Mumble cannot store server settings (i.e. SSL certificates) until you fix this problem.").arg(fi.filePath()), QMessageBox::Ok | QMessageBox::Default, QMessageBox::NoButton);
+		QMessageBox::critical(NULL, QLatin1String("Mumble"), tr("The database '%1' is read-only. Mumble cannot store server settings (i.e. SSL certificates) until you fix this problem.").arg(Qt::escape(fi.filePath())), QMessageBox::Ok | QMessageBox::Default, QMessageBox::NoButton);
 		qWarning("Database: Database is read-only");
 	}
 
@@ -131,7 +105,7 @@ Database::Database() {
 		f.setPermissions(f.permissions() & ~(QFile::ReadGroup | QFile::WriteGroup | QFile::ExeGroup | QFile::ReadOther | QFile::WriteOther | QFile::ExeOther));
 	}
 
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	execQueryAndLogFailure(query, QLatin1String("CREATE TABLE IF NOT EXISTS `servers` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `name` TEXT, `hostname` TEXT, `port` INTEGER DEFAULT " MUMTEXT(DEFAULT_MUMBLE_PORT) ", `username` TEXT, `password` TEXT)"));
 	query.exec(QLatin1String("ALTER TABLE `servers` ADD COLUMN `url` TEXT")); // Upgrade path, failing this query is not noteworthy
@@ -165,6 +139,8 @@ Database::Database() {
 
 	execQueryAndLogFailure(query, QLatin1String("CREATE TABLE IF NOT EXISTS `muted` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `hash` TEXT)"));
 	execQueryAndLogFailure(query, QLatin1String("CREATE UNIQUE INDEX IF NOT EXISTS `muted_hash` ON `muted`(`hash`)"));
+	execQueryAndLogFailure(query, QLatin1String("CREATE TABLE IF NOT EXISTS `volume` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `hash` TEXT, `volume` FLOAT)"));
+	execQueryAndLogFailure(query, QLatin1String("CREATE UNIQUE INDEX IF NOT EXISTS `volume_hash` ON `volume`(`hash`)"));
 
 	//Note: A previous snapshot version created a table called 'hidden'
 	execQueryAndLogFailure(query, QLatin1String("CREATE TABLE IF NOT EXISTS `filtered_channels` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `server_cert_digest` TEXT NOT NULL, `channel_id` INTEGER NOT NULL)"));
@@ -178,7 +154,7 @@ Database::Database() {
 
 	execQueryAndLogFailure(query, QLatin1String("VACUUM"));
 
-	execQueryAndLogFailure(query, QLatin1String("PRAGMA synchronous = OFF"));
+	execQueryAndLogFailure(query, QLatin1String("PRAGMA synchronous = NORMAL"));
 #ifdef Q_OS_WIN
 	// Windows can not handle TRUNCATE with multiple connections to the DB. Thus less performant DELETE.
 	execQueryAndLogFailure(query, QLatin1String("PRAGMA journal_mode = DELETE"));
@@ -192,13 +168,13 @@ Database::Database() {
 }
 
 Database::~Database() {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	execQueryAndLogFailure(query, QLatin1String("PRAGMA journal_mode = DELETE"));
 	execQueryAndLogFailure(query, QLatin1String("VACUUM"));
 }
 
 QList<FavoriteServer> Database::getFavorites() {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	QList<FavoriteServer> ql;
 
 	query.prepare(QLatin1String("SELECT `name`, `hostname`, `port`, `username`, `password`, `url` FROM `servers` ORDER BY `name`"));
@@ -218,7 +194,7 @@ QList<FavoriteServer> Database::getFavorites() {
 }
 
 void Database::setFavorites(const QList<FavoriteServer> &servers) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	QSqlDatabase::database().transaction();
 
 	query.prepare(QLatin1String("DELETE FROM `servers`"));
@@ -239,19 +215,16 @@ void Database::setFavorites(const QList<FavoriteServer> &servers) {
 }
 
 bool Database::isLocalIgnored(const QString &hash) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT `hash` FROM `ignored` WHERE `hash` = ?"));
 	query.addBindValue(hash);
 	execQueryAndLogFailure(query);
-	while (query.next()) {
-		return true;
-	}
-	return false;
+	return query.next();
 }
 
 void Database::setLocalIgnored(const QString &hash, bool ignored) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	if (ignored)
 		query.prepare(QLatin1String("INSERT INTO `ignored` (`hash`) VALUES (?)"));
@@ -262,19 +235,37 @@ void Database::setLocalIgnored(const QString &hash, bool ignored) {
 }
 
 bool Database::isLocalMuted(const QString &hash) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT `hash` FROM `muted` WHERE `hash` = ?"));
 	query.addBindValue(hash);
 	execQueryAndLogFailure(query);
-	while (query.next()) {
-		return true;
+	return query.next();
+}
+
+void Database::setUserLocalVolume(const QString &hash, float volume) {
+	QSqlQuery query(db);
+
+	query.prepare(QLatin1String("INSERT OR REPLACE INTO `volume` (`hash`, `volume`) VALUES (?,?)"));
+	query.addBindValue(hash);
+	query.addBindValue(QString::number(volume));
+	execQueryAndLogFailure(query);
+}
+
+float Database::getUserLocalVolume(const QString &hash) {
+	QSqlQuery query(db);
+
+	query.prepare(QLatin1String("SELECT `volume` FROM `volume` WHERE `hash` = ?"));
+	query.addBindValue(hash);
+	execQueryAndLogFailure(query);
+	if (query.first()) {
+		return query.value(0).toString().toFloat();
 	}
-	return false;
+	return 1.0f;
 }
 
 void Database::setLocalMuted(const QString &hash, bool muted) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	if (muted)
 		query.prepare(QLatin1String("INSERT INTO `muted` (`hash`) VALUES (?)"));
@@ -285,21 +276,18 @@ void Database::setLocalMuted(const QString &hash, bool muted) {
 }
 
 bool Database::isChannelFiltered(const QByteArray &server_cert_digest, const int channel_id) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	
 	query.prepare(QLatin1String("SELECT `channel_id` FROM `filtered_channels` WHERE `server_cert_digest` = ? AND `channel_id` = ?"));
 	query.addBindValue(server_cert_digest);
 	query.addBindValue(channel_id);
 	execQueryAndLogFailure(query);
 
-	while (query.next()) {
-		return true;
-	}
-	return false;
+	return query.next();
 }
 
 void Database::setChannelFiltered(const QByteArray &server_cert_digest, const int channel_id, const bool hidden) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	
 	if (hidden)
 		query.prepare(QLatin1String("INSERT INTO `filtered_channels` (`server_cert_digest`, `channel_id`) VALUES (?, ?)"));
@@ -312,21 +300,21 @@ void Database::setChannelFiltered(const QByteArray &server_cert_digest, const in
 	execQueryAndLogFailure(query);
 }
 
-QMap<QPair<QString, unsigned short>, unsigned int> Database::getPingCache() {
-	QSqlQuery query;
-	QMap<QPair<QString, unsigned short>, unsigned int> map;
+QMap<UnresolvedServerAddress, unsigned int> Database::getPingCache() {
+	QSqlQuery query(db);
+	QMap<UnresolvedServerAddress, unsigned int> map;
 
 	query.prepare(QLatin1String("SELECT `hostname`, `port`, `ping` FROM `pingcache`"));
 	execQueryAndLogFailure(query);
 	while (query.next()) {
-		map.insert(QPair<QString, unsigned short>(query.value(0).toString(), query.value(1).toUInt()), query.value(2).toUInt());
+		map.insert(UnresolvedServerAddress(query.value(0).toString(), static_cast<unsigned short>(query.value(1).toUInt())), query.value(2).toUInt());
 	}
 	return map;
 }
 
-void Database::setPingCache(const QMap<QPair<QString, unsigned short>, unsigned int> &map) {
-	QSqlQuery query;
-	QMap<QPair<QString, unsigned short>, unsigned int>::const_iterator i;
+void Database::setPingCache(const QMap<UnresolvedServerAddress, unsigned int> &map) {
+	QSqlQuery query(db);
+	QMap<UnresolvedServerAddress, unsigned int>::const_iterator i;
 
 	QSqlDatabase::database().transaction();
 
@@ -335,8 +323,8 @@ void Database::setPingCache(const QMap<QPair<QString, unsigned short>, unsigned 
 
 	query.prepare(QLatin1String("REPLACE INTO `pingcache` (`hostname`, `port`, `ping`) VALUES (?,?,?)"));
 	for (i = map.constBegin(); i != map.constEnd(); ++i) {
-		query.addBindValue(i.key().first);
-		query.addBindValue(i.key().second);
+		query.addBindValue(i.key().hostname);
+		query.addBindValue(i.key().port);
 		query.addBindValue(i.value());
 		execQueryAndLogFailure(query);
 	}
@@ -345,7 +333,7 @@ void Database::setPingCache(const QMap<QPair<QString, unsigned short>, unsigned 
 }
 
 bool Database::seenComment(const QString &hash, const QByteArray &commenthash) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT COUNT(*) FROM `comments` WHERE `who` = ? AND `comment` = ?"));
 	query.addBindValue(hash);
@@ -364,7 +352,7 @@ bool Database::seenComment(const QString &hash, const QByteArray &commenthash) {
 }
 
 void Database::setSeenComment(const QString &hash, const QByteArray &commenthash) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("REPLACE INTO `comments` (`who`, `comment`, `seen`) VALUES (?, ?, datetime('now'))"));
 	query.addBindValue(hash);
@@ -373,7 +361,7 @@ void Database::setSeenComment(const QString &hash, const QByteArray &commenthash
 }
 
 QByteArray Database::blob(const QByteArray &hash) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT `data` FROM `blobs` WHERE `hash` = ?"));
 	query.addBindValue(hash);
@@ -394,7 +382,7 @@ void Database::setBlob(const QByteArray &hash, const QByteArray &data) {
 	if (hash.isEmpty() || data.isEmpty())
 		return;
 
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("REPLACE INTO `blobs` (`hash`, `data`, `seen`) VALUES (?, ?, datetime('now'))"));
 	query.addBindValue(hash);
@@ -404,7 +392,7 @@ void Database::setBlob(const QByteArray &hash, const QByteArray &data) {
 
 QStringList Database::getTokens(const QByteArray &digest) {
 	QList<QString> qsl;
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT `token` FROM `tokens` WHERE `digest` = ?"));
 	query.addBindValue(digest);
@@ -416,7 +404,7 @@ QStringList Database::getTokens(const QByteArray &digest) {
 }
 
 void Database::setTokens(const QByteArray &digest, QStringList &tokens) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("DELETE FROM `tokens` WHERE `digest` = ?"));
 	query.addBindValue(digest);
@@ -432,7 +420,7 @@ void Database::setTokens(const QByteArray &digest, QStringList &tokens) {
 
 QList<Shortcut> Database::getShortcuts(const QByteArray &digest) {
 	QList<Shortcut> ql;
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT `shortcut`,`target`,`suppress` FROM `shortcut` WHERE `digest` = ?"));
 	query.addBindValue(digest);
@@ -463,7 +451,7 @@ QList<Shortcut> Database::getShortcuts(const QByteArray &digest) {
 }
 
 bool Database::setShortcuts(const QByteArray &digest, QList<Shortcut> &shortcuts) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	bool updated = false;
 
 	query.prepare(QLatin1String("DELETE FROM `shortcut` WHERE `digest` = ?"));
@@ -505,7 +493,7 @@ bool Database::setShortcuts(const QByteArray &digest, QList<Shortcut> &shortcuts
 
 const QMap<QString, QString> Database::getFriends() {
 	QMap<QString, QString> qm;
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT `name`, `hash` FROM `friends`"));
 	execQueryAndLogFailure(query);
@@ -515,7 +503,7 @@ const QMap<QString, QString> Database::getFriends() {
 }
 
 const QString Database::getFriend(const QString &hash) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT `name` FROM `friends` WHERE `hash` = ?"));
 	query.addBindValue(hash);
@@ -526,7 +514,7 @@ const QString Database::getFriend(const QString &hash) {
 }
 
 void Database::addFriend(const QString &name, const QString &hash) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("REPLACE INTO `friends` (`name`, `hash`) VALUES (?,?)"));
 	query.addBindValue(name);
@@ -535,7 +523,7 @@ void Database::addFriend(const QString &name, const QString &hash) {
 }
 
 void Database::removeFriend(const QString &hash) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("DELETE FROM `friends` WHERE `hash` = ?"));
 	query.addBindValue(hash);
@@ -543,7 +531,7 @@ void Database::removeFriend(const QString &hash) {
 }
 
 const QString Database::getDigest(const QString &hostname, unsigned short port) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 
 	query.prepare(QLatin1String("SELECT `digest` FROM `cert` WHERE `hostname` = ? AND `port` = ?"));
 	query.addBindValue(hostname);
@@ -556,7 +544,7 @@ const QString Database::getDigest(const QString &hostname, unsigned short port) 
 }
 
 void Database::setDigest(const QString &hostname, unsigned short port, const QString &digest) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	query.prepare(QLatin1String("REPLACE INTO `cert` (`hostname`,`port`,`digest`) VALUES (?,?,?)"));
 	query.addBindValue(hostname);
 	query.addBindValue(port);
@@ -565,7 +553,7 @@ void Database::setDigest(const QString &hostname, unsigned short port, const QSt
 }
 
 void Database::setPassword(const QString &hostname, unsigned short port, const QString &uname, const QString &pw) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	query.prepare(QLatin1String("UPDATE `servers` SET `password` = ? WHERE `hostname` = ? AND `port` = ? AND `username` = ?"));
 	query.addBindValue(pw);
 	query.addBindValue(hostname);
@@ -575,7 +563,7 @@ void Database::setPassword(const QString &hostname, unsigned short port, const Q
 }
 
 bool Database::getUdp(const QByteArray &digest) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	query.prepare(QLatin1String("SELECT COUNT(*) FROM `udp` WHERE `digest` = ? "));
 	query.addBindValue(digest);
 	execQueryAndLogFailure(query);
@@ -586,7 +574,7 @@ bool Database::getUdp(const QByteArray &digest) {
 }
 
 void Database::setUdp(const QByteArray &digest, bool udp) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	if (! udp)
 		query.prepare(QLatin1String("REPLACE INTO `udp` (`digest`) VALUES (?)"));
 	else
@@ -596,7 +584,7 @@ void Database::setUdp(const QByteArray &digest, bool udp) {
 }
 
 bool Database::fuzzyMatch(QString &name, QString &user, QString &pw, QString &hostname, unsigned short port) {
-	QSqlQuery query;
+	QSqlQuery query(db);
 	if (! user.isEmpty()) {
 		query.prepare(QLatin1String("SELECT `username`, `password`, `hostname`, `name` FROM `servers` WHERE `username` LIKE ? AND `hostname` LIKE ? AND `port`=?"));
 		query.addBindValue(user);

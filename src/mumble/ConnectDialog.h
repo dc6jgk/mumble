@@ -1,32 +1,7 @@
-/* Copyright (C) 2005-2011, Thorvald Natvig <thorvald@natvig.com>
-
-   All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions
-   are met:
-
-   - Redistributions of source code must retain the above copyright notice,
-     this list of conditions and the following disclaimer.
-   - Redistributions in binary form must reproduce the above copyright notice,
-     this list of conditions and the following disclaimer in the documentation
-     and/or other materials provided with the distribution.
-   - Neither the name of the Mumble Developers nor the names of its
-     contributors may be used to endorse or promote products derived from this
-     software without specific prior written permission.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-   ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-   A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
-   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-   EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
 
 #ifndef MUMBLE_MUMBLE_CONNECTDIALOG_H_
 #define MUMBLE_MUMBLE_CONNECTDIALOG_H_
@@ -39,10 +14,14 @@
 #include <QtCore/QtGlobal>
 #include <QtCore/QString>
 #include <QtCore/QUrl>
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-# include <QtWidgets/QTreeWidget>
+#if QT_VERSION >= 0x050000
+# include <QtWidgets/QStyledItemDelegate>
+# include <QtWidgets/QTreeView>
+# include <QtWidgets/QTreeWidgetItem>
 #else
-# include <QtGui/QTreeWidget>
+# include <QtGui/QStyledItemDelegate>
+# include <QtGui/QTreeView>
+# include <QtGui/QTreeWidgetItem>
 #endif
 
 #include <QtNetwork/QHostInfo>
@@ -53,12 +32,13 @@
 
 #include "BonjourRecord.h"
 #include "Net.h"
+#include "HostAddress.h"
 #include "Timer.h"
+#include "UnresolvedServerAddress.h"
+#include "ServerAddress.h"
 
 struct FavoriteServer;
 class QUdpSocket;
-
-typedef QPair<QHostAddress, unsigned short> qpAddress;
 
 struct PublicInfo {
 	QString qsName;
@@ -99,6 +79,16 @@ public:
 
 class ServerItem;
 
+class ServerViewDelegate : public QStyledItemDelegate {
+	Q_OBJECT
+	Q_DISABLE_COPY(ServerViewDelegate)
+public:
+	ServerViewDelegate(QObject *p = NULL);
+	~ServerViewDelegate();
+
+	void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const Q_DECL_OVERRIDE;
+};
+
 class ServerView : public QTreeWidget {
 		Q_OBJECT
 		Q_DISABLE_COPY(ServerView)
@@ -109,16 +99,16 @@ class ServerView : public QTreeWidget {
 		QMap<QString, ServerItem *> qmContinent;
 
 		ServerView(QWidget *);
-		~ServerView();
+		~ServerView() Q_DECL_OVERRIDE;
 
 		void fixupName(ServerItem *si);
 
 		ServerItem *getParent(const QString &continent, const QString &countrycode, const QString &countryname, const QString &usercontinentcode, const QString &usercountrycode);
 	protected:
-		virtual QMimeData *mimeData(const QList<QTreeWidgetItem *>&) const;
-		virtual QStringList mimeTypes() const;
-		virtual Qt::DropActions supportedDropActions() const;
-		virtual bool dropMimeData(QTreeWidgetItem *, int, const QMimeData *, Qt::DropAction);
+		QMimeData *mimeData(const QList<QTreeWidgetItem *>) const Q_DECL_OVERRIDE;
+		QStringList mimeTypes() const Q_DECL_OVERRIDE;
+		Qt::DropActions supportedDropActions() const Q_DECL_OVERRIDE;
+		bool dropMimeData(QTreeWidgetItem *, int, const QMimeData *, Qt::DropAction) Q_DECL_OVERRIDE;
 };
 
 #include "ui_ConnectDialog.h"
@@ -155,7 +145,9 @@ class ServerItem : public QTreeWidgetItem, public PingStats {
 		QString qsBonjourHost;
 		BonjourRecord brRecord;
 
-		QList<QHostAddress> qlAddresses;
+		/// Contains the resolved addresses for
+		/// this ServerItem.
+		QList<ServerAddress> qlAddresses;
 
 		ItemType itType;
 
@@ -166,7 +158,25 @@ class ServerItem : public QTreeWidgetItem, public PingStats {
 		ServerItem(const QString &name, ItemType itype, const QString &continent = QString(), const QString &country = QString());
 		ServerItem(const ServerItem *si);
 		~ServerItem();
-		static ServerItem *fromMimeData(const QMimeData *mime, QWidget *p = NULL);
+
+		/// Converts given mime data into a ServerItem object
+		///
+		/// This function checks the clipboard for a valid mumble:// style
+		/// URL and converts it into a ServerItem ready to add to the connect
+		/// dialog. It also parses .lnk files of InternetShortcut/URL type
+		/// to enable those to be dropped onto the clipboard.
+		///
+		/// @note If needed can query the user for a user name using a modal dialog.
+		/// @note If a server item is returned it's the callers reponsibility to delete it.
+		///
+		/// @param mime Mime data to analyze
+		/// @param default_name If true the hostname is set as item name if none is given
+		/// @param p Parent widget to use in case the user has to be queried
+		/// @return Server item or NULL if mime data invalid.
+		///
+		static ServerItem *fromMimeData(const QMimeData *mime, bool default_name = true, QWidget *p = NULL, bool convertHttpUrls=false);
+		/// Create a ServerItem from a mumble:// URL
+		static ServerItem *fromUrl(QUrl url, QWidget *p);
 
 		void addServerItem(ServerItem *child);
 
@@ -177,9 +187,9 @@ class ServerItem : public QTreeWidgetItem, public PingStats {
 		static QIcon loadIcon(const QString &name);
 
 		void setDatas(double ping = 0.0, quint32 users = 0, quint32 maxusers = 0);
-		bool operator< (const QTreeWidgetItem &) const;
+		bool operator< (const QTreeWidgetItem &) const Q_DECL_OVERRIDE;
 
-		QVariant data(int column, int role) const;
+		QVariant data(int column, int role) const Q_DECL_OVERRIDE;
 
 		void hideCheck();
 };
@@ -188,17 +198,37 @@ class ConnectDialogEdit : public QDialog, protected Ui::ConnectDialogEdit {
 	private:
 		Q_OBJECT
 		Q_DISABLE_COPY(ConnectDialogEdit)
+
+		void init();
 	protected:
 		bool bOk;
+		bool bCustomLabel;
+		ServerItem *m_si;
+
 	public slots:
 		void validate();
 		void accept();
 
+		void on_qbFill_clicked();
+		void on_qbDiscard_clicked();
 		void on_qcbShowPassword_toggled(bool);
+		void on_qleName_textEdited(const QString&);
+		void on_qleServer_textEdited(const QString&);
+		void showNotice(const QString &text);
+		bool updateFromClipboard();
 	public:
 		QString qsName, qsHostname, qsUsername, qsPassword;
 		unsigned short usPort;
-		ConnectDialogEdit(QWidget *parent, const QString &name = QString(), const QString &host = QString(), const QString &user = QString(), unsigned short port = DEFAULT_MUMBLE_PORT, const QString &password = QString(), bool add = false);
+		ConnectDialogEdit(QWidget *parent,
+		                  const QString &name,
+		                  const QString &host,
+		                  const QString &user,
+		                  unsigned short port,
+		                  const QString &password);
+		/// Add a new Server
+		/// Prefills from clipboard content or the connected to server if available
+		ConnectDialogEdit(QWidget *parent);
+		virtual ~ConnectDialogEdit();
 };
 
 class ConnectDialog : public QDialog, public Ui::ConnectDialog {
@@ -227,21 +257,37 @@ class ConnectDialog : public QDialog, public Ui::ConnectDialog {
 
 		ServerItem *siAutoConnect;
 
-		QList<QString> qlDNSLookup;
-		QSet<QString> qsDNSActive;
-		QHash<QString, QSet<ServerItem *> > qhDNSWait;
-		QHash<QString, QList<QHostAddress> > qhDNSCache;
+		QList<UnresolvedServerAddress> qlDNSLookup;
+		QSet<UnresolvedServerAddress> qsDNSActive;
+		QHash<UnresolvedServerAddress, QSet<ServerItem *> > qhDNSWait;
+		QHash<UnresolvedServerAddress, QList<ServerAddress> > qhDNSCache;
 
-		QHash<qpAddress, quint64> qhPingRand;
-		QHash<qpAddress, QSet<ServerItem *> > qhPings;
+		QHash<ServerAddress, quint64> qhPingRand;
+		QHash<ServerAddress, QSet<ServerItem *> > qhPings;
 
-		QMap<QPair<QString, unsigned short>, unsigned int> qmPingCache;
+		QMap<UnresolvedServerAddress, unsigned int> qmPingCache;
 
 		bool bIPv4;
 		bool bIPv6;
 		int iPingIndex;
 
 		bool bLastFound;
+
+		/// bAllowPing determines whether ConnectDialog can use
+		/// UDP packets to ping remote hosts to be able to show a
+		/// ping latency and user count.
+		bool bAllowPing;
+		/// bAllowHostLookup determines whether ConnectDialog can
+		/// resolve hosts via DNS, Bonjour, and so on.
+		bool bAllowHostLookup;
+		/// bAllowBonjour determines whether ConfigDialog can use
+		/// Bonjour to find nearby servers on the local network.
+		bool bAllowBonjour;
+		/// bAllowFilters determines whether filters are available
+		/// in the ConfigDialog. If this option is diabled, the
+		/// 'Show All' filter is forced, and no other filter can
+		/// be chosen.
+		bool bAllowFilters;
 
 		QMap<QString, QIcon> qmIcons;
 
@@ -254,10 +300,10 @@ class ConnectDialog : public QDialog, public Ui::ConnectDialog {
 		void stopDns(ServerItem *);
 	public slots:
 		void accept();
-		void fetched(QByteArray, QUrl, QMap<QString, QString>);
+		void fetched(QByteArray xmlData, QUrl, QMap<QString, QString>);
 
 		void udpReply();
-		void lookedUp(QHostInfo);
+		void lookedUp();
 		void timeTick();
 
 		void on_qaFavoriteAdd_triggered();

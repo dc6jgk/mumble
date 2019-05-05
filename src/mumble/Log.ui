@@ -48,6 +48,11 @@
      </column>
      <column>
       <property name="text">
+       <string>Highlight</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
        <string>Text-To-Speech</string>
       </property>
      </column>
@@ -176,7 +181,7 @@
      <property name="title">
       <string>Chat Log</string>
      </property>
-     <layout class="QGridLayout" name="gridLayout">
+     <layout class="QGridLayout" name="_2">
       <item row="0" column="0">
        <widget class="QLabel" name="qlMaxBlocks">
         <property name="text">

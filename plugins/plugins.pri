@@ -1,4 +1,9 @@
-include(../compiler.pri)
+# Copyright 2005-2019 The Mumble Developers. All rights reserved.
+# Use of this source code is governed by a BSD-style license
+# that can be found in the LICENSE file at the root of the
+# Mumble source tree or at <https://www.mumble.info/LICENSE>.
+
+include(../qmake/compiler.pri)
 
 TEMPLATE	= lib
 CONFIG		+= plugin debug_and_release warn_on
@@ -11,13 +16,6 @@ CONFIG(static) {
 	CONFIG += qt_dynamic_lookup
 }
 
-CONFIG(debug, debug|release) {
-  CONFIG += console
-  DESTDIR       = ../../debug/plugins
-}
+DESTDIR = $$DESTDIR/plugins
 
-CONFIG(release, debug|release) {
-  DESTDIR       = ../../release/plugins
-}
-
-include(../symbols.pri)
+include(../qmake/symbols.pri)

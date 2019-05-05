@@ -1,44 +1,16 @@
-/* Copyright (C) 2005-2011, Thorvald Natvig <thorvald@natvig.com>
-
-   All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions
-   are met:
-
-   - Redistributions of source code must retain the above copyright notice,
-     this list of conditions and the following disclaimer.
-   - Redistributions in binary form must reproduce the above copyright notice,
-     this list of conditions and the following disclaimer in the documentation
-     and/or other materials provided with the distribution.
-   - Neither the name of the Mumble Developers nor the names of its
-     contributors may be used to endorse or promote products derived from this
-     software without specific prior written permission.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-   ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-   A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
-   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-   EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
 
 #include "lib.h"
 #include "overlay.hex"
 #include <d3d10.h>
-#include <d3dx10.h>
 #include <time.h>
 
 D3D10Data *d3d10 = NULL;
 
 static bool bHooked = false;
-static HardHook hhPresent;
-static HardHook hhResize;
 static HardHook hhAddRef;
 static HardHook hhRelease;
 
@@ -54,9 +26,22 @@ typedef ULONG(__stdcall *ReleaseType)(ID3D10Device *);
 
 #define HMODREF(mod, func) func##Type p##func = (func##Type) GetProcAddress(mod, #func)
 
+struct SimpleVec3 {
+	FLOAT x;
+	FLOAT y;
+	FLOAT z;
+	SimpleVec3(FLOAT _x, FLOAT _y, FLOAT _z) : x(_x), y(_y), z(_z) {}
+};
+
+struct SimpleVec2 {
+	FLOAT x;
+	FLOAT y;
+	SimpleVec2(FLOAT _x, FLOAT _y) : x(_x), y(_y) {}
+};
+
 struct SimpleVertex {
-	D3DXVECTOR3 Pos;
-	D3DXVECTOR2 Tex;
+	SimpleVec3 Pos;
+	SimpleVec2 Tex;
 };
 
 class D10State: protected Pipe {
@@ -136,7 +121,7 @@ void D10State::blit(unsigned int x, unsigned int y, unsigned int w, unsigned int
 
 	ods("D3D10: Blit %d %d %d %d", x, y, w, h);
 
-	if (! pTexture || ! pSRView)
+	if (! pTexture || ! pSRView || uiLeft == uiRight)
 		return;
 
 	D3D10_MAPPED_TEXTURE2D mappedTex;
@@ -183,10 +168,10 @@ void D10State::setRect() {
 
 	// Create vertex buffer
 	SimpleVertex vertices[] = {
-		{ D3DXVECTOR3(left, top, 0.5f), D3DXVECTOR2(texl, text) },
-		{ D3DXVECTOR3(right, top, 0.5f), D3DXVECTOR2(texr, text) },
-		{ D3DXVECTOR3(right, bottom, 0.5f), D3DXVECTOR2(texr, texb) },
-		{ D3DXVECTOR3(left, bottom, 0.5f), D3DXVECTOR2(texl, texb) },
+		{ SimpleVec3(left, top, 0.5f), SimpleVec2(texl, text) },
+		{ SimpleVec3(right, top, 0.5f), SimpleVec2(texr, text) },
+		{ SimpleVec3(right, bottom, 0.5f), SimpleVec2(texr, texb) },
+		{ SimpleVec3(left, bottom, 0.5f), SimpleVec2(texl, texb) },
 	};
 
 	void *pData = NULL;
@@ -615,7 +600,7 @@ void checkDXGI10Hook(bool preonly) {
 		return;
 	}
 
-	if (d3d10->iOffsetAddRef == 0 || d3d10->iOffsetRelease == 0) {
+	if (d3d10->offsetAddRef == 0 || d3d10->offsetRelease == 0) {
 		return;
 	}
 
@@ -645,7 +630,7 @@ void hookD3D10(HMODULE hD3D10, bool preonly) {
 
 	// Add a ref to ourselves; we do NOT want to get unloaded directly from this process.
 	HMODULE hTempSelf = NULL;
-	GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<char *>(&hookD3D10), &hTempSelf);
+	GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCTSTR>(&hookD3D10), &hTempSelf);
 
 	bHooked = true;
 
@@ -654,7 +639,7 @@ void hookD3D10(HMODULE hD3D10, bool preonly) {
 
 	if (_wcsicmp(d3d10->wcFileName, modulename) == 0) {
 		unsigned char *raw = (unsigned char *) hD3D10;
-		HookAddRelease((voidFunc)(raw + d3d10->iOffsetAddRef), (voidFunc)(raw + d3d10->iOffsetRelease));
+		HookAddRelease((voidFunc)(raw + d3d10->offsetAddRef), (voidFunc)(raw + d3d10->offsetRelease));
 	} else if (! preonly) {
 		ods("D3D10: Interface changed, can't rawpatch. Current: %ls ; Previously: %ls", modulename, d3d10->wcFileName);
 	} else {
@@ -675,8 +660,8 @@ void PrepareDXGI10(IDXGIAdapter1 *pAdapter, bool initializeDXGIData) {
 	ods("D3D10: Preparing static data for DXGI and D3D10 Injection");
 
 	d3d10->wcFileName[0] = 0;
-	d3d10->iOffsetAddRef = 0;
-	d3d10->iOffsetRelease = 0;
+	d3d10->offsetAddRef = 0;
+	d3d10->offsetRelease = 0;
 
 	HMODULE hD3D10 = LoadLibrary("D3D10.DLL");
 
@@ -731,31 +716,31 @@ void PrepareDXGI10(IDXGIAdapter1 *pAdapter, bool initializeDXGIData) {
 			void ***vtbl = (void ***) pSwapChain;
 
 			void *pPresent = (*vtbl)[8];
-			int offset = GetFnOffsetInModule(reinterpret_cast<voidFunc>(pPresent), dxgi->wcFileName, ARRAY_NUM_ELEMENTS(dxgi->wcFileName), "D3D10", "Present");
-			if (offset >= 0) {
+			boost::optional<size_t> offset = GetFnOffsetInModule(reinterpret_cast<voidFunc>(pPresent), dxgi->wcFileName, ARRAY_NUM_ELEMENTS(dxgi->wcFileName), "D3D10", "Present");
+			if (offset) {
 				if (initializeDXGIData) {
-					dxgi->iOffsetPresent = offset;
-					ods("D3D10: Successfully found Present offset: %ls: %d", dxgi->wcFileName, dxgi->iOffsetPresent);
+					dxgi->offsetPresent = *offset;
+					ods("D3D10: Successfully found Present offset: %ls: %d", dxgi->wcFileName, dxgi->offsetPresent);
 				} else {
-					if (dxgi->iOffsetPresent == offset) {
-						ods("D3D10: Successfully verified Present offset: %ls: %d", dxgi->wcFileName, dxgi->iOffsetPresent);
+					if (dxgi->offsetPresent == *offset) {
+						ods("D3D10: Successfully verified Present offset: %ls: %d", dxgi->wcFileName, dxgi->offsetPresent);
 					} else {
-						ods("D3D10: Failed to verify Present offset for %ls. Found %d, but previously found %d.", dxgi->wcFileName, offset, dxgi->iOffsetPresent);
+						ods("D3D10: Failed to verify Present offset for %ls. Found %d, but previously found %d.", dxgi->wcFileName, offset, dxgi->offsetPresent);
 					}
 				}
 			}
 
 			void *pResize = (*vtbl)[13];
 			offset = GetFnOffsetInModule(reinterpret_cast<voidFunc>(pResize), dxgi->wcFileName, ARRAY_NUM_ELEMENTS(dxgi->wcFileName), "D3D10", "ResizeBuffers");
-			if (offset >= 0) {
+			if (offset) {
 				if (initializeDXGIData) {
-					dxgi->iOffsetResize = offset;
-					ods("D3D10: Successfully found ResizeBuffers offset: %ls: %d", dxgi->wcFileName, dxgi->iOffsetResize);
+					dxgi->offsetResize = *offset;
+					ods("D3D10: Successfully found ResizeBuffers offset: %ls: %d", dxgi->wcFileName, dxgi->offsetResize);
 				} else {
-					if (dxgi->iOffsetResize == offset) {
-						ods("D3D10: Successfully verified ResizeBuffers offset: %ls: %d", dxgi->wcFileName, dxgi->iOffsetResize);
+					if (dxgi->offsetResize == *offset) {
+						ods("D3D10: Successfully verified ResizeBuffers offset: %ls: %d", dxgi->wcFileName, dxgi->offsetResize);
 					} else {
-						ods("D3D10: Failed to verify ResizeBuffers offset for %ls. Found %d, but previously found %d.", dxgi->wcFileName, offset, dxgi->iOffsetResize);
+						ods("D3D10: Failed to verify ResizeBuffers offset for %ls. Found %d, but previously found %d.", dxgi->wcFileName, offset, dxgi->offsetResize);
 					}
 				}
 			}
@@ -764,16 +749,16 @@ void PrepareDXGI10(IDXGIAdapter1 *pAdapter, bool initializeDXGIData) {
 
 			void *pAddRef = (*vtbl)[1];
 			offset = GetFnOffsetInModule(reinterpret_cast<voidFunc>(pAddRef), d3d10->wcFileName, ARRAY_NUM_ELEMENTS(d3d10->wcFileName), "D3D10", "AddRef");
-			if (offset >= 0) {
-				d3d10->iOffsetAddRef = offset;
-				ods("D3D10: Successfully found AddRef offset: %ls: %d", d3d10->wcFileName, d3d10->iOffsetAddRef);
+			if (offset) {
+				d3d10->offsetAddRef = *offset;
+				ods("D3D10: Successfully found AddRef offset: %ls: %d", d3d10->wcFileName, d3d10->offsetAddRef);
 			}
 
 			void *pRelease = (*vtbl)[2];
 			offset = GetFnOffsetInModule(reinterpret_cast<voidFunc>(pRelease), d3d10->wcFileName, ARRAY_NUM_ELEMENTS(d3d10->wcFileName), "D3D10", "Release");
-			if (offset >= 0) {
-				d3d10->iOffsetRelease = offset;
-				ods("D3D10: Successfully found Release offset: %ls: %d", d3d10->wcFileName, d3d10->iOffsetRelease);
+			if (offset) {
+				d3d10->offsetRelease = *offset;
+				ods("D3D10: Successfully found Release offset: %ls: %d", d3d10->wcFileName, d3d10->offsetRelease);
 			}
 		}
 

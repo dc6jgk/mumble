@@ -1,12 +1,17 @@
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
+
 /* Copyright (C) 2013, Steve Hill <github@cheesy.sackheads.org>
    Copyright (C) 2013, Gabriel Risterucci <cleyfaye@gmail.com>
-   Copyright (C) 2005-2010, Thorvald Natvig <thorvald@natvig.com> 
+   Copyright (C) 2005-2010, Thorvald Natvig <thorvald@natvig.com>
 
    All rights reserved.
- 
+
    Redistribution and use in source and binary forms, with or without
    modification, are permitted provided that the following conditions
-   are met: 
+   are met:
 
    - Redistributions of source code must retain the above copyright notice,
      this list of conditions and the following disclaimer.
@@ -33,9 +38,9 @@
 #include "../mumble_plugin_win32.h"
 #include <algorithm>
 
-VOID *vects_ptr;
-VOID *state_ptr;
-VOID *character_name_ptr_loc;
+procptr_t vects_ptr;
+procptr_t state_ptr;
+procptr_t character_name_ptr_loc;
 
 static int fetch(float *avatar_pos, float *avatar_front, float *avatar_top, float *camera_pos, float *camera_front, float *camera_top, std::string &, std::wstring &identity)
 {
@@ -75,9 +80,9 @@ static int fetch(float *avatar_pos, float *avatar_front, float *avatar_top, floa
 
 
 	// Extract the character name
-	BYTE *ptr1 = peekProc<BYTE*>(character_name_ptr_loc);
-	BYTE *ptr2 = peekProc<BYTE*>(ptr1 + 0xC);
-	BYTE *character_name_ptr = ptr2 + 0x80;
+	procptr_t ptr1 = peekProcPtr(character_name_ptr_loc);
+	procptr_t ptr2 = peekProcPtr(ptr1 + 0xC);
+	procptr_t character_name_ptr = ptr2 + 0x80;
 
 	char character_name[16]; // The game limits us to 15 char names
 	ok = peekProc(character_name_ptr, character_name);
@@ -115,9 +120,9 @@ static int trylock(const std::multimap<std::wstring, unsigned long long int> &pi
 	// pos.Y = 3794
 	// pos.Z = 2930
 	// The "state" ptr is just a value that reliably alternate between 0 (in main menu)
-	// and 1 (not in main menu). There is a lot of value that keep reliably changing even 
+	// and 1 (not in main menu). There is a lot of value that keep reliably changing even
 	// across restart, change of characters...
-	// Note that I couldn't find an address that would do this reliably with the game "pause" 
+	// Note that I couldn't find an address that would do this reliably with the game "pause"
 	// menu, only the main menu (when you initially start the game, or completely exit your
 	// current game)
 
@@ -132,7 +137,7 @@ static int trylock(const std::multimap<std::wstring, unsigned long long int> &pi
 
 	// 1.3.1
 	if (peekProc(pModule + 0x1E6D048, detected_version)
-		&& VERSION_EQ(detected_version, "WILLOW2-PCSAGE-28-CL697606"))
+	    && VERSION_EQ(detected_version, "WILLOW2-PCSAGE-28-CL697606"))
 	{
 		vects_ptr = pModule + 0x1E792B0;
 		state_ptr = pModule + 0x1E79BC8;
@@ -140,7 +145,7 @@ static int trylock(const std::multimap<std::wstring, unsigned long long int> &pi
 	}
 	// 1.4.0
 	else if (peekProc(pModule + 0x1E8D1D8, detected_version)
-		&& VERSION_EQ(detected_version, "WILLOW2-PCSAGE-77-CL711033"))
+	         && VERSION_EQ(detected_version, "WILLOW2-PCSAGE-77-CL711033"))
 	{
 		vects_ptr = pModule + 0x1E993F0;
 		state_ptr = pModule + 0x1E99D08;
@@ -148,7 +153,7 @@ static int trylock(const std::multimap<std::wstring, unsigned long long int> &pi
 	}
 	// 1.5.0
 	else if (peekProc(pModule + 0x01E9F338, detected_version)
-		&& VERSION_EQ(detected_version, "WILLOW2-PCLILAC-60-CL721220"))
+	         && VERSION_EQ(detected_version, "WILLOW2-PCLILAC-60-CL721220"))
 	{
 		vects_ptr = pModule + 0x1EAB650;
 		state_ptr = pModule + 0x1EABF68;
@@ -156,11 +161,19 @@ static int trylock(const std::multimap<std::wstring, unsigned long long int> &pi
 	}
 	// 1.7.0
 	else if (peekProc(pModule + 0x01ED53A8, detected_version)
-		&& VERSION_EQ(detected_version, "WILLOW2-PCALLIUM-55-CL770068"))
+	         && VERSION_EQ(detected_version, "WILLOW2-PCALLIUM-55-CL770068"))
 	{
 		vects_ptr = pModule + 0x1EE18E0;
 		state_ptr = pModule + 0x1EE21F8;
 		character_name_ptr_loc = pModule + 0x01EDB5B4;
+	}
+	// 1.8.3
+	else if (peekProc(pModule + 0x1EE63C8, detected_version)
+	         && VERSION_EQ(detected_version, "WILLOW2-PCCHINA-29-CL827556"))
+	{
+		vects_ptr = pModule + 0x1EF2930;
+		state_ptr = pModule + 0x1EF3248;
+		character_name_ptr_loc = pModule + 0x01EEC5D4;
 	}
 	else
 	{
@@ -186,7 +199,7 @@ static const std::wstring longdesc() {
 	return std::wstring(L"Supports Borderlands 2. No context support yet.");
 }
 
-static std::wstring description(L"Borderlands 2 (v1.7.0)");
+static std::wstring description(L"Borderlands 2 (v1.8.3)");
 static std::wstring shortname(L"Borderlands 2");
 
 static int trylock1() {
@@ -211,10 +224,10 @@ static MumblePlugin2 bl2plug2 = {
 	trylock
 };
 
-extern "C" __declspec(dllexport) MumblePlugin *getMumblePlugin() {
+extern "C" MUMBLE_PLUGIN_EXPORT MumblePlugin *getMumblePlugin() {
 	return &bl2plug;
 }
 
-extern "C" __declspec(dllexport) MumblePlugin2 *getMumblePlugin2() {
+extern "C" MUMBLE_PLUGIN_EXPORT MumblePlugin2 *getMumblePlugin2() {
 	return &bl2plug2;
 }

@@ -1,3 +1,8 @@
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
+
 /* Copyright (C) 2005-2011, Thorvald Natvig <thorvald@natvig.com>
    Copyright (C) 2007, Stefan Gehn <mETz AT gehn DOT net>
 
@@ -71,8 +76,8 @@ class PortAudioInput : public AudioInput {
 		Q_DISABLE_COPY(PortAudioInput)
 	public:
 		PortAudioInput();
-		~PortAudioInput();
-		void run();
+		~PortAudioInput() Q_DECL_OVERRIDE;
+		void run() Q_DECL_OVERRIDE;
 };
 
 
@@ -82,8 +87,8 @@ class PortAudioOutput : public AudioOutput {
 		Q_DISABLE_COPY(PortAudioOutput)
 	public:
 		PortAudioOutput();
-		~PortAudioOutput();
-		void run();
+		~PortAudioOutput() Q_DECL_OVERRIDE;
+		void run() Q_DECL_OVERRIDE;
 };
 
 #else

@@ -1,38 +1,21 @@
-/* Copyright (C) 2005-2011, Thorvald Natvig <thorvald@natvig.com>
-
-   All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions
-   are met:
-
-   - Redistributions of source code must retain the above copyright notice,
-     this list of conditions and the following disclaimer.
-   - Redistributions in binary form must reproduce the above copyright notice,
-     this list of conditions and the following disclaimer in the documentation
-     and/or other materials provided with the distribution.
-   - Neither the name of the Mumble Developers nor the names of its
-     contributors may be used to endorse or promote products derived from this
-     software without specific prior written permission.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-   ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-   A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
-   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-   EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
 
 #ifndef MUMBLE_MUMBLE_GLOBALSHORTCUT_WIN_H_
 #define MUMBLE_MUMBLE_GLOBALSHORTCUT_WIN_H_
 
 #include "GlobalShortcut.h"
 #include "Timer.h"
+
+#ifdef USE_GKEY
+#include "GKey.h"
+#endif
+
+#ifdef USE_XBOXINPUT
+#include "XboxInput.h"
+#endif
 
 #define DIRECTINPUT_VERSION 0x0800
 #include <dinput.h>
@@ -41,9 +24,17 @@ typedef QPair<GUID, DWORD> qpButton;
 
 struct InputDevice {
 	LPDIRECTINPUTDEVICE8 pDID;
+
+	QString name;
+
 	GUID guid;
 	QVariant vguid;
-	QString name;
+
+	GUID guidproduct;
+	QVariant vguidproduct;
+
+	uint16_t vendor_id;
+	uint16_t product_id;
 
 	// dwType to name
 	QHash<DWORD, QString> qhNames;
@@ -63,30 +54,81 @@ class GlobalShortcutWin : public GlobalShortcutEngine {
 		Q_OBJECT
 		Q_DISABLE_COPY(GlobalShortcutWin)
 	public:
-		BYTE ucKeyState[256];
 		LPDIRECTINPUT8 pDI;
 		QHash<GUID, InputDevice *> qhInputDevices;
 		HHOOK hhMouse, hhKeyboard;
 		unsigned int uiHardwareDevices;
 		Timer tDoubleClick;
 		bool bHook;
+#ifdef USE_GKEY
+		GKeyLibrary *gkey;
+#endif
+#ifdef USE_XBOXINPUT
+		/// xboxinputLastPacket holds the last packet number
+		/// that was processed. Any new data queried for a
+		/// device is only valid if the packet number is
+		/// different than last time we queried it.
+		uint32_t   xboxinputLastPacket[XBOXINPUT_MAX_DEVICES];
+		XboxInput *xboxinput;
+		/// nxboxinput holds the number of XInput devices
+		/// available on the system. It is filled out by
+		/// our EnumDevices callback.
+		int nxboxinput;
+#endif
+
 		static BOOL CALLBACK EnumSuitableDevicesCB(LPCDIDEVICEINSTANCE, LPDIRECTINPUTDEVICE8, DWORD, DWORD, LPVOID);
 		static BOOL CALLBACK EnumDevicesCB(LPCDIDEVICEINSTANCE, LPVOID);
 		static BOOL CALLBACK EnumDeviceObjectsCallback(LPCDIDEVICEOBJECTINSTANCE lpddoi, LPVOID pvRef);
 		static LRESULT CALLBACK HookKeyboard(int, WPARAM, LPARAM);
 		static LRESULT CALLBACK HookMouse(int, WPARAM, LPARAM);
 
-		virtual bool canSuppress();
-		void run();
+		/// Handle an incoming Windows keyboard message.
+		///
+		/// Returns true if the GlobalShortcut engine signals that the
+		/// button should be suppressed. Returns false otherwise.
+		static bool handleKeyboardMessage(DWORD scancode, DWORD vkcode, bool extended, bool down);
+
+		/// Handle an incoming Windows mouse message.
+		///
+		/// Returns true if the GlobalShortcut engine signals that the
+		/// button should be suppressed. Returns false otherwise.
+		static bool handleMouseMessage(unsigned int btn, bool down);
+
+		virtual bool canSuppress() Q_DECL_OVERRIDE;
+		void run() Q_DECL_OVERRIDE;
+		bool event(QEvent *e) Q_DECL_OVERRIDE;
 	public slots:
 		void timeTicked();
 	public:
 		GlobalShortcutWin();
-		~GlobalShortcutWin();
+		~GlobalShortcutWin() Q_DECL_OVERRIDE;
 		void unacquire();
-		QString buttonName(const QVariant &);
+		QString buttonName(const QVariant &) Q_DECL_OVERRIDE;
 
-		virtual void prepareInput();
+		/// Inject a native Windows keyboard message into GlobalShortcutWin's
+		/// event stream. This method is meant to be called from the main thread
+		/// to pass native Windows keyboard messages to GlobalShortcutWin.
+		///
+		/// @param  msg  The keyboard message to inject into GlobalShortcutWin.
+		///              Must be WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN or WM_SYSKEYUP.
+		///              Otherwise the message will be ignored.
+		///
+		/// @return      Returns true if the GlobalShortcut engine signalled that
+		///              the button should be suppressed. Returns false otherwise.
+		bool injectKeyboardMessage(MSG *msg);
+
+		/// Inject a native Windows mouse message into GlobalShortcutWin's
+		/// event stream. This method is meant to be called from the main thread
+		/// to pass native Windows mouse messages to GlobalShortcutWin.
+		///
+		/// @param  msg  The keyboard message to inject into GlobalShortcutWin.
+		///              Must be WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN,
+		///              WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN
+		///              or WM_XBUTTONUP. Otherwise the message will be ignored.
+		///
+		/// @return      Returns true if the GlobalShortcut engine signalled that
+		///              the button should be suppressed. Returns false otherwise.
+		bool injectMouseMessage(MSG *msg);
 };
 
 uint qHash(const GUID &);

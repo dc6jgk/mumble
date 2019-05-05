@@ -1,50 +1,34 @@
-/* Copyright (C) 2005-2011, Thorvald Natvig <thorvald@natvig.com>
-
-   All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions
-   are met:
-
-   - Redistributions of source code must retain the above copyright notice,
-     this list of conditions and the following disclaimer.
-   - Redistributions in binary form must reproduce the above copyright notice,
-     this list of conditions and the following disclaimer in the documentation
-     and/or other materials provided with the distribution.
-   - Neither the name of the Mumble Developers nor the names of its
-     contributors may be used to endorse or promote products derived from this
-     software without specific prior written permission.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-   ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-   A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
-   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-   EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
 
 #include "mumble_pch.hpp"
 
-#include "Overlay.h"
+#include "OverlayClient.h"
+#include "OverlayPositionableItem.h"
+#include "OverlayEditor.h"
 #include "OverlayText.h"
 #include "User.h"
 #include "Channel.h"
-#include "Global.h"
 #include "Message.h"
 #include "Database.h"
 #include "NetworkConfig.h"
 #include "ServerHandler.h"
 #include "MainWindow.h"
 #include "GlobalShortcut.h"
+#include "Themes.h"
 
-OverlayClient::OverlayClient(QLocalSocket *socket, QObject *p) :
-		QObject(p),
-		ougUsers(&g.s.os) {
+// We define a global macro called 'g'. This can lead to issues when included code uses 'g' as a type or parameter name (like protobuf 3.7 does). As such, for now, we have to make this our last include.
+#include "Global.h"
+
+OverlayClient::OverlayClient(QLocalSocket *socket, QObject *p)
+	: QObject(p)
+	, framesPerSecond(0)
+	, ougUsers(&g.s.os)
+	, iMouseX(0)
+	, iMouseY(0) {
+	
 	qlsSocket = socket;
 	qlsSocket->setParent(NULL);
 	connect(qlsSocket, SIGNAL(readyRead()), this, SLOT(readyRead()));
@@ -73,13 +57,13 @@ OverlayClient::OverlayClient(QLocalSocket *socket, QObject *p) :
 	qgs.addItem(&ougUsers);
 	ougUsers.show();
 
-	qgpiFPS = new QGraphicsPixmapItem();
+	qgpiFPS = new OverlayPositionableItem(&g.s.os.qrfFps);
 	qgs.addItem(qgpiFPS);
 	qgpiFPS->setPos(g.s.os.qrfFps.x(), g.s.os.qrfFps.y());
 	qgpiFPS->show();
 
 	// Time
-	qgpiTime = new QGraphicsPixmapItem();
+	qgpiTime = new OverlayPositionableItem(&g.s.os.qrfTime);
 	qgs.addItem(qgpiTime);
 	qgpiTime->setPos(g.s.os.qrfTime.x(), g.s.os.qrfTime.y());
 	qgpiTime->show();
@@ -97,8 +81,12 @@ OverlayClient::~OverlayClient() {
 	delete qgpiCursor;
 	delete qgpiLogo;
 
-	qlsSocket->disconnect();
-	qlsSocket->abort();
+	qlsSocket->disconnectFromServer();
+	if (!qlsSocket->waitForDisconnected(1000)) {
+		qDebug() << "OverlayClient: Failed to cleanly disconnect: " << qlsSocket->errorString();
+		qlsSocket->abort();
+	}
+	
 	qlsSocket->deleteLater();
 
 	ougUsers.reset();
@@ -114,23 +102,29 @@ bool OverlayClient::eventFilter(QObject *o, QEvent *e) {
 
 void OverlayClient::updateFPS() {
 	if (g.s.os.bFps) {
-		const BasepointPixmap &pm = OverlayTextLine(QString(QLatin1String("%1")).arg(iroundf(fFps + 0.5f)), g.s.os.qfFps).createPixmap(g.s.os.qcFps);
+		const BasepointPixmap &pm = OverlayTextLine(
+		            QString(QLatin1String("%1")).arg(iroundf(framesPerSecond + 0.5f)),
+		            g.s.os.qfFps).createPixmap(g.s.os.qcFps);
+		qgpiFPS->setVisible(true);
 		qgpiFPS->setPixmap(pm);
 		// offset to use basepoint
 		//TODO: settings are providing a top left anchor, so shift down by ascent
 		qgpiFPS->setOffset(-pm.qpBasePoint + QPoint(0, pm.iAscent));
+		qgpiFPS->updateRender();
 	} else {
-		qgpiFPS->setPixmap(QPixmap());
+		qgpiFPS->setVisible(false);
 	}
 }
 
 void OverlayClient::updateTime() {
 	if (g.s.os.bTime) {
 		const BasepointPixmap &pm = OverlayTextLine(QString(QLatin1String("%1")).arg(QTime::currentTime().toString()), g.s.os.qfFps).createPixmap(g.s.os.qcFps);
+		qgpiTime->setVisible(true);
 		qgpiTime->setPixmap(pm);
 		qgpiTime->setOffset(-pm.qpBasePoint + QPoint(0, pm.iAscent));
+		qgpiTime->updateRender();
 	} else {
-		qgpiTime->setPixmap(QPixmap());
+		qgpiTime->setVisible(false);
 	}
 }
 
@@ -140,7 +134,7 @@ void OverlayClient::updateMouse() {
 	QPixmap pm;
 
 	HICON c = ::GetCursor();
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
+#if QT_VERSION < 0x050000
 	if (c == NULL)
 		c = qgv.viewport()->cursor().handle();
 #endif
@@ -148,7 +142,7 @@ void OverlayClient::updateMouse() {
 	ICONINFO info;
 	ZeroMemory(&info, sizeof(info));
 	if (c != NULL && ::GetIconInfo(c, &info)) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+#if QT_VERSION >= 0x050000
 		extern QPixmap qt_pixmapFromWinHBITMAP(HBITMAP bitmap, int format = 0);
 #else
 # define qt_pixmapFromWinHBITMAP(bmp) QPixmap::fromWinHBITMAP(bmp)
@@ -198,7 +192,7 @@ void OverlayClient::updateMouse() {
 }
 #endif
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0) && (defined(Q_OS_WIN) || defined(Q_OS_MAC))
+#if QT_VERSION < 0x050000 && (defined(Q_OS_WIN) || defined(Q_OS_MAC))
 extern bool Q_GUI_EXPORT qt_use_native_dialogs;
 #endif
 
@@ -207,7 +201,7 @@ extern bool Q_GUI_EXPORT qt_use_native_dialogs;
 // that we're about to reparent.
 
 void OverlayClient::showGui() {
-#if defined(QT3_SUPPORT) || (defined(Q_OS_WIN) && QT_VERSION < QT_VERSION_CHECK(5, 0, 0))
+#if defined(QT3_SUPPORT) || (defined(Q_OS_WIN) && QT_VERSION < 0x050000)
 	if (QCoreApplication::loopLevel() > 1)
 		return;
 #else
@@ -267,8 +261,8 @@ outer:
 		}
 	}
 
-	QEvent event(QEvent::WindowActivate);
-	qApp->sendEvent(&qgs, &event);
+	QEvent activateEvent(QEvent::WindowActivate);
+	qApp->sendEvent(&qgs, &activateEvent);
 
 	QPoint p = QCursor::pos();
 	iMouseX = qBound<int>(0, p.x(), uiWidth-1);
@@ -297,7 +291,7 @@ outer:
 
 	setupScene(true);
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0) && (defined(Q_OS_WIN) || defined(Q_OS_MAC))
+#if QT_VERSION < 0x050000 && (defined(Q_OS_WIN) || defined(Q_OS_MAC))
 	qt_use_native_dialogs = false;
 #endif
 
@@ -312,7 +306,7 @@ outer:
 }
 
 void OverlayClient::hideGui() {
-#if defined(QT3_SUPPORT) || (defined(Q_OS_WIN) && QT_VERSION < QT_VERSION_CHECK(5, 0, 0))
+#if defined(QT3_SUPPORT) || (defined(Q_OS_WIN) && QT_VERSION < 0x050000)
 	if (QCoreApplication::loopLevel() > 1) {
 		QCoreApplication::exit_loop();
 		QMetaObject::invokeMethod(this, "hideGui", Qt::QueuedConnection);
@@ -364,20 +358,13 @@ void OverlayClient::hideGui() {
 #ifdef Q_OS_MAC
 	qApp->setAttribute(Qt::AA_DontUseNativeMenuBar, false);
 	g.mw->setUnifiedTitleAndToolBarOnMac(true);
-	if (! g.qsCurrentStyle.isEmpty()) {
-		qApp->setStyle(g.qsCurrentStyle);
-	} else {
-		// Assume that an empty qsCurrentStyle means "use the aqua theme".
-		// This might not always be the case (for example, the default style
-		// can be changed via the Qt command line argument "-style".
-		qApp->setStyle(QLatin1String("Macintosh (aqua)"));
-	}
+	Themes::apply();
 #endif
 
 	setupScene(false);
 
 	qgv.setAttribute(Qt::WA_WState_Hidden, true);
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0) && (defined(Q_OS_WIN) || defined(Q_OS_MAC))
+#if QT_VERSION < 0x050000 && (defined(Q_OS_WIN) || defined(Q_OS_MAC))
 	qt_use_native_dialogs = true;
 #endif
 
@@ -426,6 +413,7 @@ void OverlayClient::readyReadMsgInit(unsigned int length) {
 	om.omh.uiMagic = OVERLAY_MAGIC_NUMBER;
 	om.omh.uiType = OVERLAY_MSGTYPE_SHMEM;
 	om.omh.iLength = key.length();
+	Q_ASSERT(sizeof(om.oms.a_cName) >= static_cast<size_t>(key.length())); // Name should be auto-generated and short
 	memcpy(om.oms.a_cName, key.constData(), key.length());
 	qlsSocket->write(om.headerbuffer, sizeof(OverlayMsgHeader) + om.omh.iLength);
 
@@ -437,7 +425,7 @@ void OverlayClient::readyReadMsgInit(unsigned int length) {
 
 void OverlayClient::readyRead() {
 	while (true) {
-		unsigned int ready = qlsSocket->bytesAvailable();
+		quint64 ready = static_cast<quint64>(qlsSocket->bytesAvailable());
 
 		if (omMsg.omh.iLength == -1) {
 			if (ready < sizeof(OverlayMsgHeader)) {
@@ -453,7 +441,7 @@ void OverlayClient::readyRead() {
 		}
 
 		if (ready >= static_cast<unsigned int>(omMsg.omh.iLength)) {
-			int length = qlsSocket->read(omMsg.msgbuffer, omMsg.omh.iLength);
+			qint64 length = qlsSocket->read(omMsg.msgbuffer, omMsg.omh.iLength);
 
 			if (length != omMsg.omh.iLength) {
 				disconnect();
@@ -462,7 +450,7 @@ void OverlayClient::readyRead() {
 
 			switch (omMsg.omh.uiType) {
 				case OVERLAY_MSGTYPE_INIT: {
-						readyReadMsgInit(length);
+						readyReadMsgInit(static_cast<unsigned int>(length));
 					}
 					break;
 				case OVERLAY_MSGTYPE_SHMEM: {
@@ -471,11 +459,23 @@ void OverlayClient::readyRead() {
 					}
 					break;
 				case OVERLAY_MSGTYPE_PID: {
-						if (length != sizeof(OverlayMsgPid))
+						if (length != static_cast<qint64>(sizeof(OverlayMsgPid)))
 							break;
 
 						OverlayMsgPid *omp = & omMsg.omp;
 						uiPid = omp->pid;
+#ifdef Q_OS_WIN
+						HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, (DWORD)uiPid);
+						if (h) {
+							wchar_t buf[MAX_PATH];
+							if (GetModuleFileNameEx(h, 0, buf, MAX_PATH) != 0) {
+								qsExecutablePath = QString::fromWCharArray(buf);
+							}
+							CloseHandle(h);
+						}
+#else
+						qsExecutablePath = QLatin1String("Unknown");
+#endif
 					}
 					break;
 				case OVERLAY_MSGTYPE_FPS: {
@@ -483,7 +483,7 @@ void OverlayClient::readyRead() {
 							break;
 
 						OverlayMsgFps *omf = & omMsg.omf;
-						fFps = omf->fps;
+						framesPerSecond = omf->fps;
 						//qWarning() << "FPS: " << omf->fps;
 
 						Overlay *o = static_cast<Overlay *>(parent());
@@ -531,7 +531,7 @@ void OverlayClient::setupScene(bool show) {
 			qgpiLogo->setPixmap(QPixmap::fromImage(qir.read()));
 
 			QRectF qrf = qgpiLogo->boundingRect();
-			qgpiLogo->setPos(iroundf((uiWidth - qrf.width()) / 2.0f + 0.5f), iroundf((uiHeight - qrf.height()) / 2.0f) + 0.5f);
+			qgpiLogo->setPos(iroundf((uiWidth - qrf.width()) / 2.0f + 0.5f), iroundf((uiHeight - qrf.height()) / 2.0f + 0.5f));
 
 		}
 

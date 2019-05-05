@@ -1,3 +1,9 @@
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
+
+
 /* Copyright (C) 2012, Mike <mike@flomp.net>
    Copyright (C) 2005-2012, Thorvald Natvig <thorvald@natvig.com>
 
@@ -39,8 +45,8 @@ const unsigned int off_char_matrix = 0x15C;
 const unsigned int off_camera_manager = 0xD919F4;
 const unsigned int off_cam_matrix = 0x2FC;
 
-static BYTE *char_matrix_ptr = 0;
-static BYTE *cam_matrix_ptr = 0;
+static procptr_t char_matrix_ptr = 0;
+static procptr_t cam_matrix_ptr = 0;
 
 typedef struct {
 	float x;
@@ -57,11 +63,7 @@ typedef struct {
 } Matrix4;
 
 static int setuppointers() {
-	BYTE *character_manager;
-	BYTE *local_player;
-	BYTE *character;
-
-	BYTE *camera_manager;
+	procptr_t character_manager, local_player, character, camera_manager;
 
 	if (!peekProc(pModule + off_character_manager, &character_manager, 4) || !character_manager)
 		return false;
@@ -176,11 +178,10 @@ static MumblePlugin2 jc2plug2 = {
 	trylock
 };
 
-extern "C" __declspec(dllexport) MumblePlugin *getMumblePlugin() {
+extern "C" MUMBLE_PLUGIN_EXPORT MumblePlugin *getMumblePlugin() {
 	return &jc2plug;
 }
 
-extern "C" __declspec(dllexport) MumblePlugin2 *getMumblePlugin2() {
+extern "C" MUMBLE_PLUGIN_EXPORT MumblePlugin2 *getMumblePlugin2() {
 	return &jc2plug2;
 }
-

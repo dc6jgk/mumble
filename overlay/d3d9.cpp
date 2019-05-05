@@ -1,32 +1,7 @@
-/* Copyright (C) 2005-2011, Thorvald Natvig <thorvald@natvig.com>
-
-   All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions
-   are met:
-
-   - Redistributions of source code must retain the above copyright notice,
-     this list of conditions and the following disclaimer.
-   - Redistributions in binary form must reproduce the above copyright notice,
-     this list of conditions and the following disclaimer in the documentation
-     and/or other materials provided with the distribution.
-   - Neither the name of the Mumble Developers nor the names of its
-     contributors may be used to endorse or promote products derived from this
-     software without specific prior written permission.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-   ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-   A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
-   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-   EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+// Copyright 2005-2019 The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
 
 #include "lib.h"
 #include <d3d9.h>
@@ -137,7 +112,7 @@ void DevState::blit(unsigned int x, unsigned int y, unsigned int w, unsigned int
 	ods("D3D9: Blit %d %d %d %d", x, y, w, h);
 	#endif
 
-	if (! texTexture || !a_ucTexture)
+	if (! texTexture || !a_ucTexture || uiLeft == uiRight)
 		return;
 
 	D3DLOCKED_RECT lr;
@@ -342,9 +317,30 @@ static HardHook hhPresent;
 static HardHook hhPresentEx;
 static HardHook hhSwapPresent;
 
-static void doPresent(IDirect3DDevice9 *idd) {
+/// Present the overlay.
+///
+/// If called via IDirect3DDevice9::present() or IDirect3DDevice9Ex::present(),
+/// idd will be non-NULL and ids ill be NULL.
+///
+/// If called via IDirect3DSwapChain9::present(), both idd and ids will be
+/// non-NULL.
+///
+/// The doPresent function expects the following assumptions to be valid:
+///
+/// - Only one swap chain used at the same time.
+/// - Windowed? IDirect3D9SwapChain::present() is used. ("Additional swap chain" is used)
+/// - Full screen? IDirect3D9Device::present() is used. (Implicit swap chain for IDirect3D9Device is used)
+///
+/// It's either/or.
+///
+/// If doPresent is called multiple times per frame (say, for different swap chains),
+/// the overlay will break badly when DevState::draw() is called. FPS counting will be off,
+/// different render targets with different sizes will cause a size-renegotiation with Mumble
+/// every frame, etc.
+static void doPresent(IDirect3DDevice9 *idd, IDirect3DSwapChain9 *ids) {
 	DevMapType::iterator it = devMap.find(idd);
 	DevState *ds = it != devMap.end() ? it->second : NULL;
+	HRESULT hres;
 
 	if (ds && ds->pSB) {
 		if (ds->dwMyThread != 0) {
@@ -352,10 +348,41 @@ static void doPresent(IDirect3DDevice9 *idd) {
 		}
 		Stash<DWORD> stashThread(&(ds->dwMyThread), GetCurrentThreadId());
 
+		// Get the back buffer.
+		// If we're called via IDirect3DSwapChain9, acquire it via the swap chain object.
+		// Otherwise, acquire it via the device itself.
 		IDirect3DSurface9 *pTarget = NULL;
+		if (ids) {
+			hres = ids->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pTarget);
+			if (FAILED(hres)) {
+				if (hres == D3DERR_INVALIDCALL) {
+					ods("D3D9: IDirect3DSwapChain9::GetBackBuffer failed. BackBuffer index equals or exceeds the total number of back buffers");
+				} else {
+					ods("D3D9: IDirect3DSwapChain9::GetBackBuffer failed");
+				}
+			}
+		} else {
+			hres = idd->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pTarget);
+			if (FAILED(hres)) {
+				if (hres == D3DERR_INVALIDCALL) {
+					ods("D3D9: IDirect3DDevice9::GetBackBuffer failed. BackBuffer index equals or exceeds the total number of back buffers");
+				} else {
+					ods("D3D9: IDirect3DDevice9::GetBackBuffer failed");
+				}
+			}
+		}
+
 		IDirect3DSurface9 *pRenderTarget = NULL;
-		idd->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pTarget);
-		idd->GetRenderTarget(0, &pRenderTarget);
+		hres = idd->GetRenderTarget(0, &pRenderTarget);
+		if (FAILED(hres)) {
+			if (hres == D3DERR_NOTFOUND) {
+				ods("D3D9: IDirect3DDevice9::GetRenderTarget failed. There is no render target with the specified index");
+			} else if (hres == D3DERR_INVALIDCALL) {
+				ods("D3D9: IDirect3DDevice9::GetRenderTarget failed. One of the passed arguments was invalid");
+			} else {
+				ods("D3D9: IDirect3DDevice9::GetRenderTarget failed");
+			}
+		}
 
 		// Present is called for each frame. Thus, we do not want to always log here.
 		#ifdef EXTENDED_OVERLAY_DEBUGOUTPUT
@@ -368,8 +395,50 @@ static void doPresent(IDirect3DDevice9 *idd) {
 
 		ds->pSB->Apply();
 
-		if (pTarget != pRenderTarget)
-			idd->SetRenderTarget(0, pTarget);
+		if (pTarget != pRenderTarget) {
+			hres = idd->SetRenderTarget(0, pTarget);
+			if (FAILED(hres)) {
+				ods("D3D9: IDirect3DDevice9::SetRenderTarget failed");
+			}
+		}
+
+		// If we're called via IDirect3DSwapChain9::present(), we have to
+		// get the size of the back buffer and manually set the viewport size
+		// to match it.
+		//
+		// Although the call to IDirect3DDevice9::SetRenderTarget() above is
+		// documented as updating the device's viewport:
+		//
+		//     "Setting a new render target will cause the viewport (see Viewports
+		//      and Clipping (Direct3D 9)) to be set to the full size of the new
+		//      render target."
+		//
+		//  (via https://msdn.microsoft.com/en-us/library/windows/desktop/bb174455(v=vs.85).aspx)
+		//
+		// ...this doesn't happen. At least for some programs such as Final Fantasy XIV
+		// and Battle.net Launcher. For these programs, we get a viewport of 1x1.
+		//
+		// The viewport we set here is used in the call below to DevState::draw()
+		// as the full size of the screen/window.
+		if (ids) {
+			D3DPRESENT_PARAMETERS pp;
+			hres = ids->GetPresentParameters(&pp);
+			if (FAILED(hres)) {
+				ods("D3D9: IDirect3DSwapChain9::GetPresentParameters failed");
+			} else {
+				if (pp.BackBufferWidth != 0 && pp.BackBufferHeight != 0) {
+					D3DVIEWPORT9 vp;
+					vp.X = 0;
+					vp.Y = 0;
+					vp.Width = pp.BackBufferWidth;
+					vp.Height = pp.BackBufferHeight;
+					vp.MinZ = 0.0f;
+					vp.MaxZ = 1.0f;
+
+					idd->SetViewport(&vp);
+				}
+			}
+		}
 
 		idd->BeginScene();
 		ds->draw();
@@ -396,7 +465,7 @@ static HRESULT __stdcall mySwapPresent(IDirect3DSwapChain9 *ids, CONST RECT *pSo
 	IDirect3DDevice9 *idd = NULL;
 	ids->GetDevice(&idd);
 	if (idd) {
-		doPresent(idd);
+		doPresent(idd, ids);
 		idd->Release();
 	}
 
@@ -417,7 +486,7 @@ static HRESULT __stdcall myPresent(IDirect3DDevice9 *idd, CONST RECT *pSourceRec
 	ods("D3D9: Device Present");
 	#endif
 
-	doPresent(idd);
+	doPresent(idd, NULL);
 
 	//TODO: Move logic to HardHook.
 	// Call base without active hook in case of no trampoline.
@@ -436,7 +505,7 @@ static HRESULT __stdcall myPresentEx(IDirect3DDevice9Ex *idd, CONST RECT *pSourc
 	ods("D3D9: Device Present Ex");
 	#endif
 
-	doPresent(idd);
+	doPresent(idd, NULL);
 
 	PresentExType oPresentEx = (PresentExType) hhPresentEx.call;
 	hhPresentEx.restore();
@@ -929,7 +998,7 @@ static void hookD3D9(HMODULE hD3D, bool preonly) {
 
 	// Add a ref to ourselves; we do NOT want to get unloaded directly from this process.
 	HMODULE hTempSelf = NULL;
-	GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<char *>(&hookD3D9), &hTempSelf);
+	GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCTSTR>(&hookD3D9), &hTempSelf);
 
 	bHooked = true;
 
@@ -940,9 +1009,9 @@ static void hookD3D9(HMODULE hD3D, bool preonly) {
 		// The module seems to match the one we prepared d3dd for.
 
 		unsigned char *raw = (unsigned char *) hD3D;
-		HookCreateRaw((voidFunc)(raw + d3dd->iOffsetCreate));
-		if (d3dd->iOffsetCreateEx) {
-			HookCreateRawEx((voidFunc)(raw + d3dd->iOffsetCreateEx));
+		HookCreateRaw((voidFunc)(raw + d3dd->offsetCreate));
+		if (d3dd->offsetCreateEx) {
+			HookCreateRawEx((voidFunc)(raw + d3dd->offsetCreateEx));
 		}
 
 	} else if (! preonly) {
@@ -990,25 +1059,6 @@ static void hookD3D9(HMODULE hD3D, bool preonly) {
 	}
 }
 
-void freeD3D9Hook(HMODULE hModule) {
-	HMODULE hD3D = GetModuleHandle("D3D9.DLL");
-	if (bHooked && !hD3D) {
-		ods("D3D9: Freeing hooks for module %p", hModule);
-
-		hhCreateDevice.reset();
-		hhCreateDeviceEx.reset();
-		hhReset.reset();
-		hhResetEx.reset();
-		hhAddRef.reset();
-		hhRelease.reset();
-		hhPresent.reset();
-		hhPresentEx.reset();
-		hhSwapPresent.reset();
-
-		bHooked = false;
-	}
-}
-
 extern "C" __declspec(dllexport) void __cdecl PrepareD3D9() {
 	if (! d3dd)
 		return;
@@ -1038,11 +1088,10 @@ extern "C" __declspec(dllexport) void __cdecl PrepareD3D9() {
 					if (!IsFnInModule(reinterpret_cast<voidFunc>(pCreate), d3dd->wcFileName, "D3D9", "CreateDevice")) {
 						ods("D3D9: CreateDevice is not in D3D9 library");
 					} else {
-						unsigned char *fn = reinterpret_cast<unsigned char *>(pCreate);
-						unsigned char *base = reinterpret_cast<unsigned char *>(hD3D);
-						d3dd->iOffsetCreate = fn - base;
-						ods("D3D9: Successfully found prepatch offset: %p %p %p: %d", hD3D, d3dcreate9, pCreate, d3dd->iOffsetCreate);
-					}
+						size_t fn = reinterpret_cast<size_t>(pCreate);
+						size_t base = reinterpret_cast<size_t>(hD3D);
+						d3dd->offsetCreate = fn - base;
+						ods("D3D9: Successfully found prepatch offset: %p %p %p: %d", hD3D, d3dcreate9, pCreate, d3dd->offsetCreate);					}
 					id3d9->Release();
 				}
 			}
@@ -1065,10 +1114,10 @@ extern "C" __declspec(dllexport) void __cdecl PrepareD3D9() {
 						if (!IsFnInModule(reinterpret_cast<voidFunc>(pCreateEx), d3dd->wcFileName, "D3D9", "CreateDeviceEx")) {
 							ods("D3D9: CreateDeviceEx is not in D3D9 library");
 						} else {
-							unsigned char *fn = reinterpret_cast<unsigned char *>(pCreateEx);
-							unsigned char *base = reinterpret_cast<unsigned char *>(hD3D);
-							d3dd->iOffsetCreateEx = fn - base;
-							ods("D3D9: Successfully found prepatch ex offset: %p %p %p: %d", hD3D, d3dcreate9ex, pCreateEx, d3dd->iOffsetCreateEx);
+							size_t fn = reinterpret_cast<size_t>(pCreateEx);
+							size_t base = reinterpret_cast<size_t>(hD3D);
+							d3dd->offsetCreateEx = fn - base;
+							ods("D3D9: Successfully found prepatch ex offset: %p %p %p: %d", hD3D, d3dcreate9ex, pCreateEx, d3dd->offsetCreateEx);
 						}
 
 						id3d9->Release();
